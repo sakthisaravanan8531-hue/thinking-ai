@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const source=fs.readFileSync('dist/aws-client.js','utf8');
+const {thinkingAws}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+let calls=[],queue=[];
+globalThis.fetch=async (url,opts)=>{calls.push({url,opts});const next=queue.shift();if(!next)throw Error('Unexpected network attempt');return {ok:next.ok??true,status:next.status??200,json:async()=>next.body}};
+const api=thinkingAws({apiUrl:'https://example.test',region:'us-east-1',clientId:'public-client'});
+queue.push({body:{answer:'Free hello',provider:'gemini'}});await api.ask({question:'hello'});assert.equal(calls[0].url,'https://example.test/free');assert.equal(calls[0].opts.headers.Authorization,undefined);calls=[];
+queue.push({body:{ChallengeName:'NEW_PASSWORD_REQUIRED',Session:'test-session',ChallengeParameters:{USER_ID_FOR_SRP:'user-uuid',requiredAttributes:'[]'}}});
+assert.equal((await api.signIn('test@example.test','temporary-password')).newPasswordRequired,true);
+assert.equal(api.isSignedIn(),false);
+queue.push({body:{AuthenticationResult:{IdToken:'test-jwt'}}});
+await api.completeNewPassword('NotARealPassword!123');
+let body=JSON.parse(calls[1].opts.body);assert.equal(body.ChallengeResponses.USERNAME,'user-uuid');assert.equal(body.Session,'test-session');assert.equal(api.isSignedIn(),true);
+queue.push({body:{answer:'Three points',provider:'bedrock',citations:[]}});
+const answer=await api.ask({mode:'summary',document:'Test document'});
+assert.equal(answer.provider,'bedrock');assert.equal(calls[2].opts.headers.Authorization,'Bearer test-jwt');
+queue.push({ok:false,status:429,body:{error:'Daily limit reached'}});
+await assert.rejects(api.ask({question:'Hi'}),/Daily limit reached/);assert.equal(calls.length,4);
+queue.push({ok:false,status:401,body:{message:'Unauthorized'}});
+await assert.rejects(api.ask({question:'Hi'}),/session expired/);assert.equal(api.isSignedIn(),false);
+api.signOut();assert.equal(api.isSignedIn(),false);
+console.log('Passed: anonymous free route, first-login challenge, JWT request, quota error without retries, expired session, sign out. No live calls made.');
+
+queue.push({body:{UserConfirmed:false}});await api.signUp('new@example.test','ExamplePassword!123','New User');let signupBody=JSON.parse(calls.at(-1).opts.body);assert.deepEqual(signupBody.UserAttributes,[{Name:'email',Value:'new@example.test'},{Name:'name',Value:'New User'}]);assert.equal(api.isSignedIn(),false);
+queue.push({body:{}});await api.confirmSignUp('new@example.test','123456');assert.equal(calls.at(-1).opts.headers['X-Amz-Target'],'AWSCognitoIdentityProviderService.ConfirmSignUp');assert.equal(api.isSignedIn(),false);
+queue.push({body:{}});await api.resendSignUpCode('new@example.test');assert.equal(calls.at(-1).opts.headers['X-Amz-Target'],'AWSCognitoIdentityProviderService.ResendConfirmationCode');
+queue.push({ok:false,status:400,body:{__type:'NotAuthorizedException',message:'SignUp disabled'}});await assert.rejects(api.signUp('new@example.test','ExamplePassword!123','User'),e=>e.code==='NotAuthorizedException');console.log('Passed account creation attributes, email verification, resend, disabled registration, and no automatic sign-in.');
+
+const namedToken='header.'+Buffer.from(JSON.stringify({name:'Sakthi சரவணன்'})).toString('base64url')+'.signature';queue.push({body:{AuthenticationResult:{IdToken:namedToken}}});await api.signIn('name@example.test','ExamplePassword!123');assert.equal(api.getDisplayName(),'Sakthi சரவணன்');api.signOut();assert.equal(api.getDisplayName(),'');
+queue.push({body:{AuthenticationResult:{IdToken:'invalid'}}});await api.signIn('old@example.test','ExamplePassword!123');assert.equal(api.getDisplayName(),'');api.signOut();console.log('Passed Unicode display name, missing-name fallback and sign-out reset.');

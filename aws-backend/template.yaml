@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Thinking AI - bounded Bedrock and optional Gemini fallback
+Parameters:
+  PrimaryProvider:
+    Type: String
+    Default: gemini
+    AllowedValues: [bedrock, gemini]
+    Description: gemini bypasses Bedrock entirely. Requires the SSM Gemini key.
+  SiteOrigin:
+    Type: String
+    Default: https://thinking-ai.jocundmars32.chatgpt.site
+    AllowedPattern: 'https://[a-zA-Z0-9.-]+'
+  CloudFrontOrigin:
+    Type: String
+    Default: https://d3nv2zhw5ihk84.cloudfront.net
+    AllowedPattern: 'https://[a-zA-Z0-9.-]+'
+  OutputTokenLimit:
+    Type: Number
+    Default: 1024
+    MinValue: 128
+    MaxValue: 2048
+  BedrockModelId:
+    Type: String
+    Default: amazon.nova-micro-v1:0
+    AllowedPattern: 'amazon\.[a-zA-Z0-9.:-]+'
+    Description: In-region foundation model only; check availability in your selected region.
+  GeminiModelId:
+    Type: String
+    Default: gemini-3.5-flash-lite
+    AllowedPattern: 'gemini-[a-zA-Z0-9.\-]+'
+  GeminiFallbackEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Enable only after confirming your Gemini project uses the free tier.
+  GeminiKeyParameter:
+    Type: String
+    Default: /thinking-ai/gemini-api-key
+    AllowedPattern: '/[a-zA-Z0-9_./-]+'
+  GlobalDailyLimit:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    MaxValue: 200
+  UserDailyLimit:
+    Type: Number
+    Default: 40
+    MinValue: 1
+    MaxValue: 50
+  FreeNetworkDailyLimit:
+    Type: Number
+    Default: 50
+    MinValue: 1
+    MaxValue: 50
+  FreeSharedDailyLimit:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    MaxValue: 100
+  AppEnabled:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+  AllowSelfSignup:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Keep false during private testing; invite yourself with admin-create-user.
+Conditions:
+  BedrockPrimary: !Equals [!Ref PrimaryProvider, bedrock]
+  SelfSignupDisabled: !Equals [!Ref AllowSelfSignup, 'false']
+Resources:
+  Users:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-users'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: !If [SelfSignupDisabled, true, false]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      AccountRecoverySetting:
+        RecoveryMechanisms: [{Name: verified_email, Priority: 1}]
+      UserPoolAddOns:
+        AdvancedSecurityMode: 'OFF'
+  WebClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref Users
+      GenerateSecret: false
+      ExplicitAuthFlows: [ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 1
+      TokenValidityUnits: {AccessToken: hours, IdToken: hours, RefreshToken: days}
+  Usage:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: pk, AttributeType: S}]
+      KeySchema: [{AttributeName: pk, KeyType: HASH}]
+      TimeToLiveSpecification: {AttributeName: expires_at, Enabled: true}
+      SSESpecification: {SSEEnabled: true}
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: '$default'
+      CorsConfiguration:
+        AllowOrigins: [!Ref SiteOrigin, !Ref CloudFrontOrigin]
+        AllowHeaders: [authorization, content-type]
+        AllowMethods: [POST, OPTIONS]
+        MaxAge: 600
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 2
+        ThrottlingRateLimit: 1
+      Auth:
+        DefaultAuthorizer: CognitoJwt
+        Authorizers:
+          CognitoJwt:
+            IdentitySource: '$request.header.Authorization'
+            JwtConfiguration:
+              issuer: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${Users}'
+              audience: [!Ref WebClient]
+  ChatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.handler
+      Runtime: python3.12
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 28
+      Environment:
+        Variables:
+          PRIMARY_PROVIDER: !Ref PrimaryProvider
+          USAGE_TABLE: !Ref Usage
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          GEMINI_MODEL_ID: !Ref GeminiModelId
+          GEMINI_FALLBACK_ENABLED: !Ref GeminiFallbackEnabled
+          GEMINI_KEY_PARAMETER: !Ref GeminiKeyParameter
+          MAX_OUTPUT_TOKENS: !Ref OutputTokenLimit
+          GLOBAL_DAILY_LIMIT: !Ref GlobalDailyLimit
+          USER_DAILY_LIMIT: !Ref UserDailyLimit
+          FREE_NETWORK_DAILY_LIMIT: !Ref FreeNetworkDailyLimit
+          FREE_SHARED_DAILY_LIMIT: !Ref FreeSharedDailyLimit
+          APP_ENABLED: !Ref AppEnabled
+      Policies:
+        - Statement:
+            - !If
+              - BedrockPrimary
+              - Effect: Allow
+                Action: [bedrock:InvokeModel]
+                Resource: !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}'
+              - !Ref AWS::NoValue
+            - Effect: Allow
+              Action: [dynamodb:UpdateItem]
+              Resource: !GetAtt Usage.Arn
+            - Effect: Allow
+              Action: [ssm:GetParameter]
+              Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiKeyParameter}'
+      Events:
+        Chat:
+          Type: HttpApi
+          Properties: {ApiId: !Ref Api, Path: /chat, Method: POST, TimeoutInMillis: 29000}
+        FreeChat:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /free
+            Method: POST
+            TimeoutInMillis: 29000
+            Auth:
+              Authorizer: NONE
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ChatFunction}'
+      RetentionInDays: 3
+Outputs:
+  ApiUrl:
+    Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+  UserPoolId:
+    Value: !Ref Users
+  ClientId:
+    Value: !Ref WebClient
+  Region:
+    Value: !Ref AWS::Region
+  FunctionName:
+    Value: !Ref ChatFunction
