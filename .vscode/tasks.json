@@ -1,0 +1,1 @@
+{"version":"2.0.0","tasks":[{"label":"Run security tests","type":"shell","command":"python -m unittest discover -s tests -v","group":{"kind":"test","isDefault":true}},{"label":"Preview frontend","type":"shell","command":"python -m http.server 8000 --directory dist","isBackground":true,"problemMatcher":[]}]}

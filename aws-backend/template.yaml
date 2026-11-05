@@ -1,20 +1,22 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Thinking AI - bounded Bedrock and optional Gemini fallback
+Description: Thinking AI authenticated department document workspace
 Parameters:
   PrimaryProvider:
     Type: String
     Default: gemini
-    AllowedValues: [bedrock, gemini]
+    AllowedValues:
+    - bedrock
+    - gemini
     Description: gemini bypasses Bedrock entirely. Requires the SSM Gemini key.
   SiteOrigin:
     Type: String
     Default: https://thinking-ai.jocundmars32.chatgpt.site
-    AllowedPattern: 'https://[a-zA-Z0-9.-]+'
+    AllowedPattern: https://[a-zA-Z0-9.-]+
   CloudFrontOrigin:
     Type: String
     Default: https://d3nv2zhw5ihk84.cloudfront.net
-    AllowedPattern: 'https://[a-zA-Z0-9.-]+'
+    AllowedPattern: https://[a-zA-Z0-9.-]+
   OutputTokenLimit:
     Type: Number
     Default: 1024
@@ -23,21 +25,17 @@ Parameters:
   BedrockModelId:
     Type: String
     Default: amazon.nova-micro-v1:0
-    AllowedPattern: 'amazon\.[a-zA-Z0-9.:-]+'
-    Description: In-region foundation model only; check availability in your selected region.
+    AllowedPattern: amazon\.[a-zA-Z0-9.:-]+
+    Description: In-region foundation model only; check availability in your selected
+      region.
   GeminiModelId:
     Type: String
     Default: gemini-3.5-flash-lite
-    AllowedPattern: 'gemini-[a-zA-Z0-9.\-]+'
-  GeminiFallbackEnabled:
-    Type: String
-    Default: 'false'
-    AllowedValues: ['true', 'false']
-    Description: Enable only after confirming your Gemini project uses the free tier.
+    AllowedPattern: gemini-[a-zA-Z0-9.\-]+
   GeminiKeyParameter:
     Type: String
     Default: /thinking-ai/gemini-api-key
-    AllowedPattern: '/[a-zA-Z0-9_./-]+'
+    AllowedPattern: /[a-zA-Z0-9_./-]+
   GlobalDailyLimit:
     Type: Number
     Default: 100
@@ -45,40 +43,67 @@ Parameters:
     MaxValue: 200
   UserDailyLimit:
     Type: Number
-    Default: 40
-    MinValue: 1
-    MaxValue: 50
-  FreeNetworkDailyLimit:
-    Type: Number
     Default: 50
     MinValue: 1
     MaxValue: 50
-  FreeSharedDailyLimit:
-    Type: Number
-    Default: 100
-    MinValue: 1
-    MaxValue: 100
   AppEnabled:
     Type: String
     Default: 'true'
-    AllowedValues: ['true', 'false']
-  AllowSelfSignup:
+    AllowedValues:
+    - 'true'
+    - 'false'
+  KnowledgeBaseId:
+    Type: String
+    MinLength: 1
+  DataSourceId:
+    Type: String
+    MinLength: 1
+  DocumentBucket:
+    Type: String
+    MinLength: 1
+  DocumentTable:
+    Type: String
+    MinLength: 1
+  GuardrailId:
+    Type: String
+    MinLength: 1
+  GuardrailVersion:
+    Type: String
+    MinLength: 1
+  DocumentFallbackEnabled:
     Type: String
     Default: 'false'
-    AllowedValues: ['true', 'false']
-    Description: Keep false during private testing; invite yourself with admin-create-user.
+    AllowedValues:
+    - 'true'
+    - 'false'
+  IndexDailyLimit:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 100
+    Description: Maximum fallback indexing worker batches per UTC day; up to 10 documents
+      per batch.
 Conditions:
-  BedrockPrimary: !Equals [!Ref PrimaryProvider, bedrock]
-  SelfSignupDisabled: !Equals [!Ref AllowSelfSignup, 'false']
+  BedrockPrimary:
+    Fn::Equals:
+    - Ref: PrimaryProvider
+    - bedrock
+  DocumentFallback:
+    Fn::Equals:
+    - Ref: DocumentFallbackEnabled
+    - 'true'
 Resources:
   Users:
     Type: AWS::Cognito::UserPool
     Properties:
-      UserPoolName: !Sub '${AWS::StackName}-users'
-      UsernameAttributes: [email]
-      AutoVerifiedAttributes: [email]
+      UserPoolName:
+        Fn::Sub: ${AWS::StackName}-users
+      UsernameAttributes:
+      - email
+      AutoVerifiedAttributes:
+      - email
       AdminCreateUserConfig:
-        AllowAdminCreateUserOnly: !If [SelfSignupDisabled, true, false]
+        AllowAdminCreateUserOnly: true
       Policies:
         PasswordPolicy:
           MinimumLength: 12
@@ -87,36 +112,59 @@ Resources:
           RequireNumbers: true
           RequireSymbols: true
       AccountRecoverySetting:
-        RecoveryMechanisms: [{Name: verified_email, Priority: 1}]
+        RecoveryMechanisms:
+        - Name: verified_email
+          Priority: 1
       UserPoolAddOns:
         AdvancedSecurityMode: 'OFF'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
   WebClient:
     Type: AWS::Cognito::UserPoolClient
     Properties:
-      UserPoolId: !Ref Users
+      UserPoolId: &id001
+        Ref: Users
       GenerateSecret: false
-      ExplicitAuthFlows: [ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      ExplicitAuthFlows: &id002
+      - ALLOW_USER_PASSWORD_AUTH
+      - ALLOW_REFRESH_TOKEN_AUTH
       PreventUserExistenceErrors: ENABLED
       AccessTokenValidity: 1
       IdTokenValidity: 1
       RefreshTokenValidity: 1
-      TokenValidityUnits: {AccessToken: hours, IdToken: hours, RefreshToken: days}
+      TokenValidityUnits: &id003
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
   Usage:
     Type: AWS::DynamoDB::Table
     Properties:
       BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions: [{AttributeName: pk, AttributeType: S}]
-      KeySchema: [{AttributeName: pk, KeyType: HASH}]
-      TimeToLiveSpecification: {AttributeName: expires_at, Enabled: true}
-      SSESpecification: {SSEEnabled: true}
+      AttributeDefinitions:
+      - AttributeName: pk
+        AttributeType: S
+      KeySchema:
+      - AttributeName: pk
+        KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
   Api:
     Type: AWS::Serverless::HttpApi
     Properties:
-      StageName: '$default'
+      StageName: $default
       CorsConfiguration:
-        AllowOrigins: [!Ref SiteOrigin, !Ref CloudFrontOrigin]
-        AllowHeaders: [authorization, content-type]
-        AllowMethods: [POST, OPTIONS]
+        AllowOrigins:
+        - Ref: SiteOrigin
+        - Ref: CloudFrontOrigin
+        AllowHeaders:
+        - authorization
+        - content-type
+        AllowMethods:
+        - POST
+        - OPTIONS
         MaxAge: 600
       DefaultRouteSettings:
         ThrottlingBurstLimit: 2
@@ -125,73 +173,436 @@ Resources:
         DefaultAuthorizer: CognitoJwt
         Authorizers:
           CognitoJwt:
-            IdentitySource: '$request.header.Authorization'
+            IdentitySource: $request.header.Authorization
             JwtConfiguration:
-              issuer: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${Users}'
-              audience: [!Ref WebClient]
+              issuer:
+                Fn::Sub: https://cognito-idp.${AWS::Region}.amazonaws.com/${Users}
+              audience:
+              - Ref: WebClient
+              - Ref: AdminClient
   ChatFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: src/
       Handler: app.handler
       Runtime: python3.12
-      Architectures: [arm64]
+      Architectures:
+      - arm64
       MemorySize: 256
       Timeout: 28
       Environment:
         Variables:
-          PRIMARY_PROVIDER: !Ref PrimaryProvider
-          USAGE_TABLE: !Ref Usage
-          BEDROCK_MODEL_ID: !Ref BedrockModelId
-          GEMINI_MODEL_ID: !Ref GeminiModelId
-          GEMINI_FALLBACK_ENABLED: !Ref GeminiFallbackEnabled
-          GEMINI_KEY_PARAMETER: !Ref GeminiKeyParameter
-          MAX_OUTPUT_TOKENS: !Ref OutputTokenLimit
-          GLOBAL_DAILY_LIMIT: !Ref GlobalDailyLimit
-          USER_DAILY_LIMIT: !Ref UserDailyLimit
-          FREE_NETWORK_DAILY_LIMIT: !Ref FreeNetworkDailyLimit
-          FREE_SHARED_DAILY_LIMIT: !Ref FreeSharedDailyLimit
-          APP_ENABLED: !Ref AppEnabled
+          PRIMARY_PROVIDER:
+            Ref: PrimaryProvider
+          USAGE_TABLE:
+            Ref: Usage
+          BEDROCK_MODEL_ID:
+            Ref: BedrockModelId
+          GEMINI_MODEL_ID:
+            Ref: GeminiModelId
+          GEMINI_KEY_PARAMETER:
+            Ref: GeminiKeyParameter
+          MAX_OUTPUT_TOKENS:
+            Ref: OutputTokenLimit
+          GLOBAL_DAILY_LIMIT:
+            Ref: GlobalDailyLimit
+          USER_DAILY_LIMIT:
+            Ref: UserDailyLimit
+          APP_ENABLED:
+            Ref: AppEnabled
+          STAFF_CLIENT_ID:
+            Ref: WebClient
+          ADMIN_CLIENT_ID:
+            Ref: AdminClient
+          KNOWLEDGE_BASE_ID:
+            Ref: KnowledgeBaseId
+          DATA_SOURCE_ID:
+            Ref: DataSourceId
+          DOCUMENT_BUCKET:
+            Ref: DocumentBucket
+          DOCUMENT_TABLE:
+            Ref: DocumentTable
+          GUARDRAIL_ID:
+            Ref: GuardrailId
+          GUARDRAIL_VERSION:
+            Ref: GuardrailVersion
+          USER_POOL_ID:
+            Ref: Users
+          ENFORCE_LIVE_ROLES: 'true'
+          DEPARTMENT_REGISTRY_ENABLED: 'true'
+          DOCUMENT_FALLBACK_ENABLED:
+            Ref: DocumentFallbackEnabled
+          INDEX_DAILY_LIMIT:
+            Ref: IndexDailyLimit
+          FALLBACK_INDEX_BUCKET:
+            Fn::If:
+            - DocumentFallback
+            - Ref: FallbackIndexBucket
+            - ''
+          FALLBACK_INDEX_FUNCTION:
+            Fn::If:
+            - DocumentFallback
+            - Ref: IndexWorker
+            - ''
       Policies:
-        - Statement:
-            - !If
-              - BedrockPrimary
-              - Effect: Allow
-                Action: [bedrock:InvokeModel]
-                Resource: !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}'
-              - !Ref AWS::NoValue
-            - Effect: Allow
-              Action: [dynamodb:UpdateItem]
-              Resource: !GetAtt Usage.Arn
-            - Effect: Allow
-              Action: [ssm:GetParameter]
-              Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiKeyParameter}'
+      - Statement:
+        - Fn::If:
+          - BedrockPrimary
+          - Effect: Allow
+            Action:
+            - bedrock:InvokeModel
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
+          - Ref: AWS::NoValue
+        - Effect: Allow
+          Action:
+          - dynamodb:UpdateItem
+          Resource:
+            Fn::GetAtt: Usage.Arn
+        - Effect: Allow
+          Action:
+          - ssm:GetParameter
+          Resource:
+            Fn::Sub: arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${GeminiKeyParameter}
+        - Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:PutItem
+          - dynamodb:Scan
+          Resource:
+            Fn::Sub: arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DocumentTable}
+        - Effect: Allow
+          Action:
+          - bedrock:Retrieve
+          - bedrock:StartIngestionJob
+          - bedrock:GetIngestionJob
+          Resource:
+            Fn::Sub: arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}
+        - Effect: Allow
+          Action:
+          - bedrock:ApplyGuardrail
+          Resource:
+            Fn::Sub: arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${GuardrailId}
+        - Effect: Allow
+          Action:
+          - s3:PutObject
+          - s3:GetObject
+          - s3:DeleteObject
+          Resource:
+            Fn::Sub: arn:${AWS::Partition}:s3:::${DocumentBucket}/*
+        - Effect: Allow
+          Action:
+          - cognito-idp:ListUsers
+          - cognito-idp:AdminGetUser
+          - cognito-idp:AdminListGroupsForUser
+          - cognito-idp:AdminCreateUser
+          - cognito-idp:AdminAddUserToGroup
+          - cognito-idp:AdminRemoveUserFromGroup
+          - cognito-idp:AdminEnableUser
+          - cognito-idp:AdminDisableUser
+          - cognito-idp:AdminResetUserPassword
+          - cognito-idp:AdminDeleteUser
+          - cognito-idp:AdminUpdateUserAttributes
+          Resource:
+            Fn::GetAtt:
+            - Users
+            - Arn
+        - Effect: Allow
+          Action:
+          - cognito-idp:CreateGroup
+          - cognito-idp:GetGroup
+          - cognito-idp:DeleteGroup
+          - cognito-idp:ListUsersInGroup
+          Resource:
+            Fn::GetAtt:
+            - Users
+            - Arn
+        - Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          Resource:
+            Fn::GetAtt:
+            - Usage
+            - Arn
+        - Effect: Allow
+          Action:
+          - dynamodb:UpdateItem
+          Resource:
+            Fn::Sub: arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DocumentTable}
+        - Fn::If:
+          - DocumentFallback
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            - s3:DeleteObject
+            Resource:
+              Fn::Sub: ${FallbackIndexBucket.Arn}/text-index/*
+          - Ref: AWS::NoValue
+        - Fn::If:
+          - DocumentFallback
+          - Effect: Allow
+            Action:
+            - lambda:InvokeFunction
+            Resource:
+              Fn::GetAtt:
+              - IndexWorker
+              - Arn
+          - Ref: AWS::NoValue
       Events:
         Chat:
           Type: HttpApi
-          Properties: {ApiId: !Ref Api, Path: /chat, Method: POST, TimeoutInMillis: 29000}
-        FreeChat:
-          Type: HttpApi
           Properties:
-            ApiId: !Ref Api
-            Path: /free
+            ApiId:
+              Ref: Api
+            Path: /chat
             Method: POST
             TimeoutInMillis: 29000
-            Auth:
-              Authorizer: NONE
+        Me:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /admin/me
+            Method: POST
+            TimeoutInMillis: 29000
+        List:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /admin/list
+            Method: POST
+            TimeoutInMillis: 29000
+        Prepare:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /admin/prepare
+            Method: POST
+            TimeoutInMillis: 29000
+        Complete:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /admin/complete
+            Method: POST
+            TimeoutInMillis: 29000
+        Delete:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /admin/delete
+            Method: POST
+            TimeoutInMillis: 29000
+        Sync:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /admin/sync
+            Method: POST
+            TimeoutInMillis: 29000
+        Job:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /admin/job
+            Method: POST
+            TimeoutInMillis: 29000
+        StaffMe:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /me
+            Method: POST
+            TimeoutInMillis: 29000
+        AdminUsers:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /admin/users
+            Method: POST
+            TimeoutInMillis: 29000
+        AdminDepartments:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /admin/departments
+            Method: POST
+            TimeoutInMillis: 29000
+        AdminFallbackIndex:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: Api
+            Path: /admin/fallback-index
+            Method: POST
+            TimeoutInMillis: 29000
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${ChatFunction}'
+      LogGroupName:
+        Fn::Sub: /aws/lambda/${ChatFunction}
+      RetentionInDays: 3
+  AdminClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: *id001
+      GenerateSecret: false
+      ExplicitAuthFlows: *id002
+      PreventUserExistenceErrors: ENABLED
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 1
+      TokenValidityUnits: *id003
+  HrGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId:
+        Ref: Users
+      GroupName: hr
+  CloudGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId:
+        Ref: Users
+      GroupName: cloud
+  GenaiGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId:
+        Ref: Users
+      GroupName: genai
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId:
+        Ref: Users
+      GroupName: admin
+  FallbackIndexBucket:
+    Type: AWS::S3::Bucket
+    Condition: DocumentFallback
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+  FallbackIndexBucketTLS:
+    Type: AWS::S3::BucketPolicy
+    Condition: DocumentFallback
+    Properties:
+      Bucket:
+        Ref: FallbackIndexBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Deny
+          Principal: '*'
+          Action: s3:*
+          Resource:
+          - Fn::GetAtt:
+            - FallbackIndexBucket
+            - Arn
+          - Fn::Sub: ${FallbackIndexBucket.Arn}/*
+          Condition:
+            Bool:
+              aws:SecureTransport: 'false'
+  IndexWorker:
+    Type: AWS::Serverless::Function
+    Condition: DocumentFallback
+    Properties:
+      CodeUri: src/
+      Handler: fallback_index.handler
+      Runtime: python3.12
+      Architectures:
+      - arm64
+      MemorySize: 1024
+      Timeout: 120
+      Environment:
+        Variables:
+          DOCUMENT_TABLE:
+            Ref: DocumentTable
+          DOCUMENT_BUCKET:
+            Ref: DocumentBucket
+          FALLBACK_INDEX_BUCKET:
+            Ref: FallbackIndexBucket
+      Policies:
+      - Statement:
+        - Effect: Allow
+          Action:
+          - s3:GetObject
+          Resource:
+            Fn::Sub: arn:${AWS::Partition}:s3:::${DocumentBucket}/*
+        - Effect: Allow
+          Action:
+          - s3:PutObject
+          - s3:DeleteObject
+          Resource:
+            Fn::Sub: ${FallbackIndexBucket.Arn}/text-index/*
+        - Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:UpdateItem
+          Resource:
+            Fn::Sub: arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DocumentTable}
+          Condition:
+            ForAllValues:StringLike:
+              dynamodb:LeadingKeys:
+              - DOC#*
+  IndexWorkerAsync:
+    Type: AWS::Lambda::EventInvokeConfig
+    Condition: DocumentFallback
+    Properties:
+      FunctionName:
+        Ref: IndexWorker
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 0
+      MaximumEventAgeInSeconds: 3600
+  IndexWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: DocumentFallback
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/lambda/${IndexWorker}
       RetentionInDays: 3
 Outputs:
   ApiUrl:
-    Value: !Sub 'https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+    Value:
+      Fn::Sub: https://${Api}.execute-api.${AWS::Region}.${AWS::URLSuffix}
   UserPoolId:
-    Value: !Ref Users
+    Value:
+      Ref: Users
   ClientId:
-    Value: !Ref WebClient
+    Value:
+      Ref: WebClient
   Region:
-    Value: !Ref AWS::Region
+    Value:
+      Ref: AWS::Region
   FunctionName:
-    Value: !Ref ChatFunction
+    Value:
+      Ref: ChatFunction
+  AdminClientId:
+    Value:
+      Ref: AdminClient
+  FallbackIndexBucket:
+    Condition: DocumentFallback
+    Value:
+      Ref: FallbackIndexBucket
+  IndexWorkerName:
+    Condition: DocumentFallback
+    Value:
+      Ref: IndexWorker

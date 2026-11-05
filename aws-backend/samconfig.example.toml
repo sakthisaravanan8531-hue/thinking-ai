@@ -1,9 +1,0 @@
-version = 0.1
-[default.deploy.parameters]
-stack_name = "thinking-ai-backend"
-region = "us-east-1"
-resolve_s3 = true
-confirm_changeset = true
-capabilities = "CAPABILITY_IAM"
-disable_rollback = false
-parameter_overrides = "PrimaryProvider=\"gemini\" SiteOrigin=\"https://thinking-ai.jocundmars32.chatgpt.site\" CloudFrontOrigin=\"https://d3nv2zhw5ihk84.cloudfront.net\" OutputTokenLimit=\"1024\" BedrockModelId=\"amazon.nova-micro-v1:0\" GeminiModelId=\"gemini-3.5-flash-lite\" GeminiFallbackEnabled=\"false\" GeminiKeyParameter=\"/thinking-ai/gemini-api-key\" GlobalDailyLimit=\"100\" UserDailyLimit=\"40\" FreeNetworkDailyLimit=\"50\" FreeSharedDailyLimit=\"100\" AppEnabled=\"true\" AllowSelfSignup=\"true\""

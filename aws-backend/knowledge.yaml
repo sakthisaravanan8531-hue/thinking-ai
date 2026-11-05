@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Thinking AI support resources for EXISTING Bedrock KB; no source bucket
+  or vector store is created
+Parameters:
+  KnowledgeBaseId:
+    Type: String
+    Default: 5KIGBYRICE
+    AllowedValues:
+    - 5KIGBYRICE
+  DataSourceId:
+    Type: String
+    Default: VPS3UHQOQC
+    AllowedValues:
+    - VPS3UHQOQC
+  DocumentBucket:
+    Type: String
+    Default: thinkingai-datasourse-bucket
+    AllowedValues:
+    - thinkingai-datasourse-bucket
+Resources:
+  Catalog:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: pk
+        AttributeType: S
+      KeySchema:
+      - AttributeName: pk
+        KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+  Grounding:
+    Type: AWS::Bedrock::Guardrail
+    Properties:
+      Name:
+        Fn::Sub: ${AWS::StackName}-grounding
+      BlockedInputMessaging: Please ask about approved department documents.
+      BlockedOutputsMessaging: No grounded answer found.
+      ContextualGroundingPolicyConfig:
+        FiltersConfig:
+        - Type: GROUNDING
+          Threshold: 0.8
+        - Type: RELEVANCE
+          Threshold: 0.7
+  GroundingVersion:
+    Type: AWS::Bedrock::GuardrailVersion
+    Properties:
+      GuardrailIdentifier:
+        Ref: Grounding
+      Description: Document grounding v1
+Outputs:
+  KnowledgeBaseId:
+    Value:
+      Ref: KnowledgeBaseId
+  DataSourceId:
+    Value:
+      Ref: DataSourceId
+  DocumentBucket:
+    Value:
+      Ref: DocumentBucket
+  DocumentTable:
+    Value:
+      Ref: Catalog
+  GuardrailId:
+    Value:
+      Fn::GetAtt:
+      - Grounding
+      - GuardrailId
+  GuardrailVersion:
+    Value:
+      Fn::GetAtt:
+      - GroundingVersion
+      - Version

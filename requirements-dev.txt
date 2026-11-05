@@ -1,0 +1,3 @@
+-r aws-backend/src/requirements.txt
+PyYAML>=6,<7
+cfn-lint>=1,<2
